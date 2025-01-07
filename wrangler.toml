@@ -2,9 +2,11 @@
 name = "exampl"
 main = "src/index.ts"
 compatibility_date = "2024-12-30"
-compatibility_flags = ["nodejs_compat"]
 
-routes = [{ pattern = "*.exampl.page/*", zone_name = "exampl.page" }]
+routes = [
+	{ pattern = "*.exampl.page/*", zone_name = "exampl.page" },
+	{ pattern = "exampl.page", custom_domain = true },
+]
 
 # Workers Logs
 # Docs: https://developers.cloudflare.com/workers/observability/logs/workers-logs/
