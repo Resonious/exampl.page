@@ -16,7 +16,6 @@ export default {
 		const url = new URL(request.url);
 		const hostnameSplit = url.hostname.split('.');
 
-		console.log(url);
 		console.log(hostnameSplit);
 
 		if (hostnameSplit.length <= 2) {
@@ -73,7 +72,7 @@ export default {
 			);
 		}
 
-		if (url.pathname !== '/' && url.pathname !== '/favicon.svg') {
+		if (url.pathname !== '/' && !url.pathname.endsWith('.png')) {
 			return new Response('not found', { status: 404 });
 		}
 
@@ -81,14 +80,17 @@ export default {
 
 		if (request.method == 'DELETE') {
 			await env.EXAMPL_PAGES.delete(subdomain);
-			await env.EXAMPL_PAGES.delete(`${subdomain} favicon.svg`);
+			const keys = await env.EXAMPL_PAGES.list({ prefix: subdomain });
+			for (const key of keys.keys) {
+				await env.EXAMPL_PAGES.delete(key.name);
+			}
 			return new Response('Deleted');
 		}
 
-		const key = url.pathname === '/favicon.svg' ? `${subdomain} favicon.svg` : subdomain;
-		const contentType = url.pathname === '/favicon.svg' ? `image/svg+xml` : `text/html`;
+		const key = url.pathname.endsWith('.png') ? `${subdomain} ${url.pathname}` : subdomain;
+		const contentType = url.pathname.endsWith('.png') ? `image/png` : `text/html`;
 
-		const cached = await env.EXAMPL_PAGES.get(key);
+		const cached = await env.EXAMPL_PAGES.get(key, { type: 'stream' });
 		if (cached) {
 			return new Response(cached, {
 				headers: {
@@ -98,50 +100,57 @@ export default {
 		}
 
 		let content;
-		if (url.pathname === '/favicon.svg') {
-			content = await generate(
-				env,
-				`
-				Generate me an svg of a capital letter ${subdomain.charAt(0)}. Maybe put a circle or some other shape
-				surrounding it, with some fun colors.
-
-				Respond with SVG code only. No explanation is desired.
-			`,
-			);
+		if (url.pathname.endsWith('.png')) {
+			content = await env.AI.run('@cf/stabilityai/stable-diffusion-xl-base-1.0', {
+				prompt: `illustration of ${url.pathname.replace('.png', '')} for ${subdomain}`,
+				height: 512,
+				width: 512,
+			});
 		} else {
-			content = await generate(
+			content = await openAI(
 				env,
 				`
 				Please generate me an example page of a website. It needs to be a single HTML file, with all CSS
 				as inline style tags. Feel free to use Google web fonts if desired.
 				Do not include any fake email addresses or links to other sites.
+				If you want to include images, direct them to "/{descriptive_word}.png".
 				The theme of the website is "${subdomain}".
 
 				Respond with code only. No explanation is desired.
 
-				Include <link rel="icon" type="image/svg+xml" href="/favicon.svg"> in the <head> tag.
+				Include <link rel="icon" type="image/png" href="/favicon.png"> in the <head> tag.
 			`,
 			);
 		}
 
-		if (typeof content !== 'string') {
+		if (!(typeof content === 'string' || content instanceof ReadableStream)) {
+			console.error('Bad content', content);
 			return new Response('Please try again', {
 				status: 503,
 			});
 		}
 
 		let responseContent = content;
-		if (content.startsWith('```html')) {
-			responseContent = content.slice(8);
-		}
-		if (content.startsWith('```xml')) {
-			responseContent = content.slice(7);
-		}
-		if (content.endsWith('```')) {
-			responseContent = responseContent.slice(0, -3);
+		if (typeof responseContent === 'string') {
+			if (responseContent.startsWith('```html')) {
+				responseContent = responseContent.slice(8);
+			}
+			if (responseContent.endsWith('```')) {
+				responseContent = responseContent.slice(0, -3);
+			}
 		}
 
-		await env.EXAMPL_PAGES.put(key, responseContent);
+		let kvContent;
+		if (responseContent instanceof ReadableStream) {
+			const [a, b] = responseContent.tee();
+			kvContent = a;
+			responseContent = b;
+		} else {
+			kvContent = responseContent;
+		}
+
+		const expirationTtl = 60 * 60 * 24 * 60;
+		await env.EXAMPL_PAGES.put(key, kvContent, { expirationTtl });
 
 		return new Response(responseContent, {
 			headers: {
@@ -151,7 +160,7 @@ export default {
 	},
 } satisfies ExportedHandler<Env>;
 
-async function generate(env: Env, prompt: string): Promise<string | null> {
+async function openAI(env: Env, prompt: string): Promise<string | null> {
 	const API_ENDPOINT = 'https://api.openai.com/v1/chat/completions';
 
 	const response = await fetch(API_ENDPOINT, {

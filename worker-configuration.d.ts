@@ -2,4 +2,5 @@
 
 interface Env {
 	EXAMPL_PAGES: KVNamespace;
+	AI: Ai;
 }
